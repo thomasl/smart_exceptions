@@ -63,5 +63,5 @@ map(F, T) when tuple(T) ->
     F(list_to_tuple([ map(F, Tsub) || Tsub <- tuple_to_list(T) ]));
 map(F, Xs) when list(Xs) ->
     [ map(F, X) || X <- Xs ];
-map(F, C) when constant(C) ->
+map(F, C) when atom(C) ; number(C) ->
     C.

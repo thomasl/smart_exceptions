@@ -29,9 +29,9 @@
 %%
 %%			   SMART EXCEPTIONS
 %%
-%% Author: Thomas Lindgren (030414-; 051016)
+%% Author: Thomas Lindgren (030414-; 051016; 081004)
 %%
-%% A simplified version of the earlier smart_exceptions.
+%% A simplified version of the earlier smart_exceptions, twice.
 %%
 %% USAGE
 %%   erlc +'{parse_transform, smart_exceptions}' file.erl
@@ -51,92 +51,84 @@
 %% The generated code looks awful (lots of redundant code) but the beam
 %% compiler gets rid of this.
 %%
-%% NOTE: file/2 and file/3 can NOT be used without the parse.erl module. For
-%% external distribution, just use parse_transform/2
+%% Third version of smart_exceptions: here, we get rid of the Handler
+%% argument and the R9/R10 stuff (we always use try ... end) as well
+%% as the use of the mapform module (which is proprietary).
 %%
-%% *** UNFINISHED ***
-%% - does not work for Wings 0.98.31 (lots of unsafe variables)
-%%   * the generated code looks a bit iffy
-%% - R10B compatibility is weak, not very tested
-%% - function undefined exceptions not caught, likewise for funs
-%%   * see error_handler:undefined_function/3 undefined_lambda/3
-%%     however, we can't redefine this globally
-%%     [the solution would be for the new module to invoke error_handler
-%%      and catch any exits; however, it also has to retain line numbers
-%%      etc somehow]
-%% - smart_exc_rt functionality not tested lately
-%%   * it used to work :-)
+%% UNFINISHED
+%% - some handlers missing or bad
+%% - (P = E) must extract all variables X1..Xn in P and generate
+%%      exit(EXIT), X1=nyi, ..., Xn = nyi
+%%   to satisfy the compiler
+%% - untested ...
 
 -module(smart_exceptions).
 -author('thomasl_erlang@yahoo.com').
 -export([parse_transform/2]).
--export([file/2, file/3]).    %% only for internal use
-
-%% define r10 means 'try' is used in the generated code rather
-%% than 'catch'. Note that try is _handled_ by default.
-%%-define(r10, true).
-%% define 'internal' when you have my internal utilities available.
-%%-define(internal, true).
-
-%% use the first definition of ?msg when you want mild debug info
-%%-define(msg(Str, Xs), io:format(Str, Xs)).
--define(msg(Str, Xs), ok).
-
--define(default_exn_handler_mod, smart_exc_rt).
-
--define(exn_handler, smart_exit).
-%%-define(exn_handler, ?default_exn_handler_mod).
+-compile(export_all).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%% Current typical usage:
+%%   erlc -pa $PATH +'{parse_transform, smart_exceptions}' $ERLFILE
+%%
+%% PATH must provide smart_exceptions.beam to enable the parse transform.
+%%
+%% If you want to see what the transform produces, provide the flag '-E'.
 
 parse_transform(Forms, Opts) ->
     %% Opts = compiler options
     M = get_module_name(Forms),
-    Handler = get_exc_handler(),
-    case Handler of
-	none ->
-	    Forms;
-	_ ->
-	    ?msg("smart_exceptions for module\n", []),
-	    forms(M, Handler, Forms)
-    end.
+    forms(M, Forms).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-get_exc_handler() ->
-    case init:get_argument(smart_exceptions) of
-	{ok, Vals} ->
-	    [Handler_str] = lists:last(Vals),
-	    case list_to_atom(Handler_str) of
-		exit ->
-		    smart_exit;
-		none ->
-		    %% don't transform
-		    none;
-		Hdlr ->
-		    Hdlr
-	    end;
-	Err ->
-	    ?exn_handler
-    end.
+forms(M, Forms0) when atom(M) ->
+    Forms = simple_resolve_imports(Forms0),
+    [ form(M, Form) || Form <- Forms ].
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-file(File, Opts) ->
-    Mod = parse:file(File, Opts),
-    NewMod = module(Mod),
-    parse:print(parse:reattribute(NewMod)).
-
-file(File, Outfile, Opts) ->
-    Mod = parse:file(File, Opts),
-    NewMod = module(Mod),
-    parse:print(Outfile, parse:reattribute(NewMod)).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-module({Mod, Exp, Forms, Misc}) ->    
-    Handler = get_exc_handler(),
-    {Mod, Exp, forms(Mod, Handler, Forms), Misc}.
+form(M, Form) ->
+    {F, A} = function_name(Form),
+    mapform0(
+      fun({function, Lf, F1, A1, []}=Form0) ->
+	      Form0;
+	 ({function, Lf, F1, A1, Clss}) ->
+	      smart_function(M, F1, A1, Lf, Clss);
+	 ({match, Lm, P, E}=Expr) ->
+	      smart_match(M, F, A, Lm, P, E);
+	 ({'case',Lc,E,Clss}) ->
+	      smart_case(M, F, A, Lc, E, Clss);
+	 ({'if',Li,Clss}) ->
+	      smart_if(M, F, A, Li, Clss);
+	 ({'fun',Lf,{clauses,Clss}}) ->
+	      smart_fun(M, F, A, Lf, Clss);
+	 ({'fun',Lf,{clauses,Clss}, Info}) ->
+	      smart_fun(M, F, A, Lf, Clss, Info);
+	 ({op,Lo,Op,E1,E2}=E) ->
+	      smart_binop(M, F, A, Lo, Op, E1, E2);
+	 ({op,Lo,Op,E1}=E) ->
+	      smart_unop(M, F, A, Lo, Op, E1);
+	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,exit}},[Rsn]}=E) ->
+	      smart_exit(M, F, A, Lc, Rsn);
+	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,fault}},[Rsn]}=E) ->
+	      smart_fault(M, F, A, Lc, Rsn);
+	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,error}},[Rsn]}=E) ->
+	      smart_error(M, F, A, Lc, Rsn);
+	 ({call,Lc,{atom,Lf,exit},[Rsn]}=E) ->
+	      smart_exit(M, F, A, Lc, Rsn);
+	 ({call,Lc,{remote,Lr,{atom,Lm,Mod},{atom,Lf,Fn}},As}=E) ->
+	      case erlang:is_builtin(Mod, Fn, length(As)) of
+		  true ->
+		      smart_bif(M, F, A, Lc, 
+				Mod, Fn, length(As), As);
+		  false ->
+		      E
+	      end;
+	 (E) ->
+	      E
+      end,
+      Form
+     ).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%
@@ -168,71 +160,26 @@ resolve_calls(Forms, FuncDefs) ->
 %% erlang:f(...). This is deliberate, since Erlang itself behaves that way.
 %% (Doing so is also arguable the wrong thing.)
 
--ifdef(internal).
 resolve_form({function, _Lf, Fn, Ar, _Clss} = Form, FuncDefs) ->
-    ?msg("Resolving ~p\n", [{Fn, Ar}]),
-    mapform:form(
-      fun id/1,
-      fun id/1,
-      fun id/1,
-      fun id/1,
-      fun({call, Lc, {atom, Lf, F}, As}=Expr) ->
-	      FA = {F, A = length(As)},
-	      case erlang:is_builtin(erlang,F,A) of
-		  true ->
-		      %% if ALSO defined locally, should warn
-		      ?msg("Looking up ~p -> bif\n", [FA]),
-		      Lm = Lc,
-		      {call, Lc, 
-		       {remote, Lc, 
-			{atom, Lm, erlang}, {atom, Lf, F}}, As};
-		  false ->
-		      case lists:keysearch(FA, 1, FuncDefs) of
-			  {value, {_, local}} ->
-			      ?msg("Looking up ~p -> local\n", [FA]),
-			      Expr;
-			  {value, {_, {import, M}}} ->
-			      ?msg("Looking up ~p -> import\n", [FA]),
-			      {call, Lc,
-			       {remote, Lc, {atom, Lc, M}, {atom, Lf, F}}, As};
-			  false ->
-			      ?msg("Looking up ~p -> undefined\n", [FA]),
-			      Expr
-		      end
-	      end;
-	 (Expr) ->
-	      Expr
-      end,
-      fun(Wh, Oth) -> Oth end,
-      Form
-     );
-resolve_form(Form, FuncDefs) ->
-    Form.
--else.
-resolve_form({function, _Lf, Fn, Ar, _Clss} = Form, FuncDefs) ->
-    ?msg("Resolving ~p\n", [{Fn, Ar}]),
     mapform0(
       fun({call, Lc, {atom, Lf, F}, As}=Expr) ->
 	      FA = {F, A = length(As)},
 	      case erlang:is_builtin(erlang,F,A) of
 		  true ->
 		      %% if ALSO defined locally, should warn
-		      ?msg("Looking up ~p -> bif\n", [FA]),
+		      %% ?msg("Looking up ~p -> bif\n", [FA]),
 		      Lm = Lc,
-		      {call, Lc, 
-		       {remote, Lc, 
-			{atom, Lm, erlang}, {atom, Lf, F}}, As};
+		      mk_remote_call(erlang, F, As);
 		  false ->
 		      case lists:keysearch(FA, 1, FuncDefs) of
 			  {value, {_, local}} ->
-			      ?msg("Looking up ~p -> local\n", [FA]),
+			      %% ?msg("Looking up ~p -> local\n", [FA]),
 			      Expr;
 			  {value, {_, {import, M}}} ->
-			      ?msg("Looking up ~p -> import\n", [FA]),
-			      {call, Lc,
-			       {remote, Lc, {atom, Lc, M}, {atom, Lf, F}}, As};
+			      %% ?msg("Looking up ~p -> import\n", [FA]),
+			      mk_remote_call(M, F, As);
 			  false ->
-			      ?msg("Looking up ~p -> undefined\n", [FA]),
+			      %% ?msg("Looking up ~p -> undefined\n", [FA]),
 			      Expr
 		      end
 	      end;
@@ -243,387 +190,251 @@ resolve_form({function, _Lf, Fn, Ar, _Clss} = Form, FuncDefs) ->
      );
 resolve_form(Form, FuncDefs) ->
     Form.
--endif.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-forms(M, Handler, Forms0) when atom(M), atom(Handler) ->
-    Forms = simple_resolve_imports(Forms0),
-    [ form(M, Handler, Form) || Form <- Forms ].
-
--ifdef(internal).
-form(M, Handler, Form) ->
-    {F, A} = function_name(Form),
-    mapform:form(
-      fun({function, Lf, F1, A1, Clss}) ->
-	      {function, Lf, F1, A1, 
-	       handle_function_clause(M, F, A, Lf, Clss, Handler)};
-	 (Attr) ->
-	      Attr
-      end,
-      fun id/1,
-      fun id/1,
-      fun id/1,
-      fun({match, Lm, P, E}=Expr) ->
-	      handle_match(M, F, A, Lm, P, E, Handler);
-	 ({'case',Lc,E,Clss}) ->
-	      {'case',Lc, E, handle_case_clause(M, F, A, Lc, Clss, Handler)};
-	 ({'if',Li,Clss}) ->
-	      {'if', Li, handle_if_clause(M, F, A, Li, Clss, Handler)};
-	 ({'fun',Lf,{clauses,Clss}}) ->
-	      {'fun',Lf,
-	       {clauses, handle_function_clause(M, F, A, Lf, Clss, Handler)}};
-	 ({'fun',Lf,{clauses,Clss}, Info}) ->
-	      {'fun',Lf,{clauses, 
-			 handle_function_clause(M, F, A, Lf, Clss, Handler)},
-	       Info};
-	 ({op,Lo,Op,E1,E2}=E) ->
-	      handle_binop(M, F, A, Lo, Op, E1, E2, Handler);
-	 ({op,Lo,Op,E1}=E) ->
-	      handle_unop(M, F, A, Lo, Op, E1, Handler);
-	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,exit}},[Rsn]}=E) ->
-	      handle_exit(M, F, A, Lc, Rsn, Handler);
-	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,fault}},[Rsn]}=E) ->
-	      handle_fault(M, F, A, Lc, Rsn, Handler);
-	 ({call,Lc,{atom,Lf,exit},[Rsn]}=E) ->
-	      handle_exit(M, F, A, Lc, Rsn, Handler);
-	 ({call,Lc,{remote,Lr,{atom,Lm,Mod},{atom,Lf,Fn}},As}=E) ->
-	      case erlang:is_builtin(Mod, Fn, length(As)) of
-		  true ->
-		      handle_bif(M, F, A, Lc, 
-				 Mod, Fn, length(As), As, Handler);
-		  false ->
-		      E
-	      end;
-	 ({'try', Lt, Es, Clss, Try_clss, AfterEs}=E) ->
-	      %% - at present we just extend the regular Clss
-	      NewClss = handle_try_clause(M, F, A, Lt, Clss, Handler),
-	      {'try', Lt, Es, NewClss, Try_clss, AfterEs};
-	 (E) ->
-	      E
-      end,
-      fun(Wh, Oth) -> Oth end,
-      Form
-     ).
-
-id(X) ->
-    X.
--else.
-form(M, Handler, Form) ->
-    {F, A} = function_name(Form),
-    mapform0(
-      fun({function, Lf, F1, A1, []}=TheForm) ->
-	      TheForm;
-	 ({function, Lf, F1, A1, Clss}) ->
-	      {function, Lf, F1, A1, 
-	       handle_function_clause(M, F, A, Lf, Clss, Handler)};
-	 ({match, Lm, P, E}=Expr) ->
-	      handle_match(M, F, A, Lm, P, E, Handler);
-	 ({'case',Lc,E,Clss}) ->
-	      {'case',Lc, E, handle_case_clause(M, F, A, Lc, Clss, Handler)};
-	 ({'if',Li,Clss}) ->
-	      {'if', Li, handle_if_clause(M, F, A, Li, Clss, Handler)};
-	 ({'fun',Lf,{clauses,Clss}}) ->
-	      {'fun',Lf,
-	       {clauses, handle_function_clause(M, F, A, Lf, Clss, Handler)}};
-	 ({'fun',Lf,{clauses,Clss}, Info}) ->
-	      {'fun',Lf,{clauses, 
-			 handle_function_clause(M, F, A, Lf, Clss, Handler)},
-	       Info};
-	 ({op,Lo,Op,E1,E2}=E) ->
-	      handle_binop(M, F, A, Lo, Op, E1, E2, Handler);
-	 ({op,Lo,Op,E1}=E) ->
-	      handle_unop(M, F, A, Lo, Op, E1, Handler);
-	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,exit}},[Rsn]}=E) ->
-	      handle_exit(M, F, A, Lc, Rsn, Handler);
-	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,fault}},[Rsn]}=E) ->
-	      handle_fault(M, F, A, Lc, Rsn, Handler);
-	 ({call,Lc,{atom,Lf,exit},[Rsn]}=E) ->
-	      handle_exit(M, F, A, Lc, Rsn, Handler);
-	 ({call,Lc,{remote,Lr,{atom,Lm,Mod},{atom,Lf,Fn}},As}=E) ->
-	      case erlang:is_builtin(Mod, Fn, length(As)) of
-		  true ->
-		      handle_bif(M, F, A, Lc, 
-				 Mod, Fn, length(As), As, Handler);
-		  false ->
-		      E
-	      end;
-	 ({'try', Lt, Es, Clss, Try_clss, AfterEs}=E) ->
-	      %% - at present we just extend the regular Clss
-	      NewClss = handle_try_clause(M, F, A, Lt, Clss, Handler),
-	      {'try', Lt, Es, NewClss, Try_clss, AfterEs};
-	 (E) ->
-	      E
-      end,
-      Form
-     ).
--endif.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-handle_function_clause(M, F, A, Lf, Clss, Handler) ->
-    N = clauses_arity(Clss),
-    Exc_hd = mk_vars(1,N),
-    Clss ++ 
-	[{clause, -Lf, Exc_hd, [], 
-	  [clause_handler(Handler, M, F, A, Lf, function_clause, Exc_hd)]}].
-
-handle_case_clause(M, F, A, Lf, Clss, Handler) ->
-    N = clauses_arity(Clss),
-    Exc_hd = mk_vars(1,N),
-    Clss ++ 
-	[{clause, -Lf, Exc_hd, [], 
-	  [clause_handler(Handler, M, F, A, Lf, case_clause, Exc_hd)]}].
-
-handle_if_clause(M, F, A, Lf, Clss, Handler) ->
-    N = clauses_arity(Clss),
-    Exc_hd = mk_vars(1,N),
-    Clss ++ 
-	[{clause, -Lf, Exc_hd, [], 
-	  [clause_handler(Handler, M, F, A, Lf, if_clause, Exc_hd)]}].
-
-handle_try_clause(M, F, A, Lf, Clss = [], Handler) ->
-    %% clauses may be empty, in which case we add nothing
-    Clss;
-handle_try_clause(M, F, A, Lf, Clss, Handler) ->
-    N = clauses_arity(Clss),
-    Exc_hd = mk_vars(1,N),
-    Clss ++ 
-	[{clause, -Lf, Exc_hd, [], 
-	  [clause_handler(Handler, M, F, A, Lf, try_clause, Exc_hd)]}].
-
-%% Note: we match the handler "P = <handler>" since
-%% erlc will think the clause is unsafe otherwise (since it always exits
-%% it's actually safe).
 %%
-%% case E of
-%%   X=P -> X;
-%%   X -> <match handler>
-%% end
-%%
-%% where X is a new variable
+%% [R12B4]
 
-handle_match(M, F, A, Lm, P, E, Handler) ->
+%% Exprs = [Expr]
+%% Cases = [Clause]
+%% Exn_handlers = [Exn_clause]
+%% After = [Expr]
+%%
+%% The Exn_handler clause looks like
+%%   {clause,_,[{atom,_,Type},Pat,{var,_,'_'}], Guard, Body}
+%% where Type = exit | error | throw
+
+%% Here is a simplistic handler. The main problem is, Expr does
+%% not export vars. I think. (Uhh, the docs sorta suggested it.)
+%%
+%% What we want to do is convert this macro into rewrite rules
+%% that we can apply to all the relevant locations.
+
+%% Expr generates exit({{M,F,A}, {line, L}, Rsn})
+%% M,F,A,Line,Rsn must be abstracted; Expr is already an abstract expr
+
+smart_expr(M, F, A, Line, Rsn, Expr) ->
+    Exn_term = erl_parse:abstract({{M,F,A}, {line, Line}, Rsn}),
+    mk_try([Expr], [],
+	   [exn_handler(exit, 'Rsn', [mk_exit(Exn_term)]),
+	    exn_handler(error, 'Rsn', [mk_error(Exn_term)])],
+	   []).
+
+mk_try(Exprs, Cases, Exn_handlers, After) ->
+    {'try', -1, Exprs, Cases, Exn_handlers, After}.
+
+exn_handler(Type, Var, Body) ->
+    {clause, -1, 
+     [{tuple, -1, [{atom, -1, Type}, {var, -1, Var}, {var, -1, '_'}]}],
+     [],
+     Body}.
+
+mk_exit(Term) ->
+    mk_nonlocal(exit, Term).
+
+mk_error(Term) ->
+    mk_nonlocal(error, Term).
+
+mk_nonlocal(Ty, Term) ->
+    mk_remote_call(erlang, Ty, [Term]).
+
+%% UNFINISHED
+%% - becomes (case Expr of Pat -> ok ; Val -> EXIT)
+%%   where Val must export all the variables in Pat ...
+%%     use free_vars(Pat, []) + generate matches
+
+smart_match(M, F, A, Line, Pat, Expr) ->
     X = new_var(),
-    Exc_hd = [X],
-    {'case', Lm, E,
-     [{clause, Lm, [{match, Lm, X, P}], [], [X]},
-      {clause, -Lm, Exc_hd, [],
-       [{match, -Lm, P, 
-	 clause_handler(Handler, M, F, A, Lm, match, Exc_hd)}]}]}.
+    FVs = vars_of(Pat),
+    AbsMatch = {tuple, -1, [{atom, -1, match}, X]},
+    {'case', -1, Expr,
+     [{clause, -1, [{match,-1,Pat,X}], [], [X]},
+      {clause, -1, [X], [], 
+       [smart_exit(M, F, A, Line, AbsMatch)] ++
+       [ {match, -1, Y, {atom, -1, nyi}} || Y <- FVs ]}]}.
 
--ifndef(r10).
-%% R9: catch and rethrow exception
-handle_binop(M, F, A, Lo, Op, E1, E2, Handler) ->
-    Rsn = new_var(),
+%% M, F, A, Line, Rsn are concrete; Expr and Clss are abstract
+%% Note: the Expr is already rewritten
+%%
+%% Add extra clause
+%%   X -> exit({{M,F,A},{line, L}, {case_clause, X}})
+
+smart_case(M, F, A, Line, Expr, Clss) ->
+    X = new_var(),
+    Case_term = {tuple, -1, [{atom,-1,case_clause}, X]},
+    Term = exn_term({M, F, A}, {line, Line}, Case_term),
+    {'case', -1, Expr,
+     Clss ++
+     [{clause, -1, [X], [], [mk_exit(Term)]}]}.
+
+%% M, F, A, Line, Rsn are concrete; Expr and Clss are abstract
+%% Note: the Expr is already rewritten
+%%
+%% Add extra clause: 
+%%    true -> exit({{M,F,A},{line,Line},if_clause})
+
+smart_if(M, F, A, Line, Clss) ->
+    Term = erl_parse:abstract({{M,F,A}, {line, Line}, if_clause}),
+    {'if', -1,
+     Clss ++
+     [{clause, -1, [], [],
+       [mk_exit(Term)]}]}.
+
+%% fun(P1,...,Pk) -> B end
+%% add extra clause:
+%%    (X1,...,Xn) -> exit({{M,F,A},{line,L},{fun_clause,X1,...,Xn}})
+
+smart_fun(M, F, A, Line, Clss) ->
+    Arity = clauses_arity(Clss),
+    Xs = new_vars(Arity),
+    Fun_args = {tuple, -1, [{atom, -1, fun_clause}] ++ Xs},
+    Term = exn_term({M, F, A}, {line, Line}, Fun_args),
+    {'fun', -1,
+     Clss ++
+     [{clause, -1, Xs, [],
+       [mk_exit(Term)]}]}.
+
+%% Same as above, but preserves Info field too
+%%
+%% UNFINISHED
+%% - is the Info field properly preserved? e.g., we're adding variables
+
+smart_fun(M, F, A, Line, Clss, Info) ->
+    Arity = clauses_arity(Clss),
+    Xs = new_vars(Arity),
+    Fun_args = {tuple, -1, [{atom, -1, fun_clause}, cons_list(Xs)]},
+    Term = exn_term({M, F, A}, {line, Line}, Fun_args),
+    {'fun', -1,
+     Clss ++
+     [{clause, -1, Xs, [],
+       [mk_exit(Term)]}], 
+     Info}.
+
+%% F(P1,...,Pk) -> B end
+%% add extra clause:
+%%    (X1,...,Xn) -> exit({{M,F,A},{line,L},{fun_clause,X1,...,Xn}})
+
+smart_function(M, F, A, Line, Clss) ->
+    Arity = clauses_arity(Clss),
+    Xs = new_vars(Arity),
+    Fun_args = {tuple, -1, [{atom, -1, fun_clause}, cons_list(Xs)]},
+    Term = exn_term({M, F, A}, {line, Line}, Fun_args),
+    {function, Line, F, A,
+     Clss ++
+     [{clause, -1, Xs, [],
+       [mk_exit(Term)]}]}.
+
+%% M, F, A, Line, Rsn are concrete; F and [A1,..,An] are abstract
+%% A call F(E1,..,En) generates {{M,F,A},{line,L},[E1,..,En],Rsn}
+%%
+%% Rewrite to
+%%   X1 = E1, ..., Xn = En,
+%%   try F(X1,...,Xn)
+%%   catch exit:Rsn -> exit({{M,F,A},{line,L},{bif, F, Xs}})
+%%         exit:Rsn -> error({{M,F,A},{line,L},{bif, F, Xs}})
+%%   end
+%%
+%% UNFINISHED - 
+%% - 'Rsn' seems amateurish
+%% - Exn_term contains the abstract Xs
+
+smart_bif(M, F, A, Line, Mod, Func, Arity, Args) ->
+    Xs = new_vars(Arity),
+    Evals = [ {match, -1, X, Arg} || {X, Arg} <- lists:zip(Xs, Args) ],
+    Bif = {tuple, -1, [{atom, -1, bif}, {atom, -1, F}, cons_list(Xs)]},
+    Exn_term = exn_term({M, F, A}, {line, Line}, Bif),
+    {block, -1,
+     Evals ++
+     [mk_try([mk_remote_call(Mod, Func, Xs)],
+	     [],
+	     [exn_handler(exit, 'Rsn', [mk_exit(Exn_term)]),
+	      exn_handler(error, 'Rsn', [mk_error(Exn_term)])],
+	     [])]}.
+
+mk_remote_call(M, F, Xs) ->
+    {call, -1, {remote, -1, {atom, -1, M}, {atom, -1, F}}, Xs}.
+
+%% Rewrite to
+%%   X1 = E1, X2 = E2,
+%%   try X1 Binop X2 
+%%   catch exit:Rsn -> exit({{M,F,A},{line,L},{Binop, X1, X2}})
+%%         exit:Rsn -> error({{M,F,A},{line,L},{Binop, X1, X2}})
+%%   end
+%%
+%% UNFINISHED
+%% - 'Rsn' seems amateurish
+%% - Exn_term seems weird, where are X1,X2 ...
+
+smart_binop(M, F, A, Line, Op, E1, E2) ->
     X1 = new_var(),
     X2 = new_var(),
-    Res = new_var(),
-    {block, Lo,
-     [{match, Lo, X1, E1},
-      {match, Lo, X2, E2},
-      {'case', Lo, {'catch', Lo, {op, Lo, Op, X1, X2}},
-       [{clause, -Lo, [{tuple, Lo, [{atom, Lo, 'EXIT'}, Rsn]}], [],
-	 [op_handler(Handler, M, F, A, Lo, Rsn, binop, Op, [X1,X2])]},
-	{clause, -Lo, [Res], [], [Res]}]}
-     ]
-    }.
--else.
-%% R10: use try
-handle_binop(M, F, A, Lo, Op, E1, E2, Handler) ->
-    Rsn = new_var(),
-    X1 = new_var(),
-    X2 = new_var(),
-    Res = new_var(),
-    {block, Lo,
-     [{match, Lo, X1, E1},
-      {match, Lo, X2, E2},
-      {'try', Lo,
-       [{op, Lo, Op, X1, X2}],
-       [],
-       [{clause, -Lo, [exit_pat(Rsn)], [],
-	 [op_handler(Handler, M, F, A, Lo, Rsn, binop, Op, [X1,X2])]}],
-       []
-      }]}.
--endif.
+    Exn_term = exn_term({M, F, A}, {line, Line}, {var, -1, 'Rsn'}),
+    {block, -1,
+     [{match, -1, X1, E1},
+      {match, -1, X2, E2},
+      mk_try([mk_binop(Op, X1, X2)], [],
+	     [exn_handler(exit, 'Rsn', [mk_exit(Exn_term)]),
+	      exn_handler(error, 'Rsn', [mk_error(Exn_term)])],
+	     [])
+      ]}.
 
--ifndef(r10).
-%% R9: catch and rethrow exception
-handle_unop(M, F, A, Lo, Op, E1, Handler) ->
-    Rsn = new_var(),
-    X1 = new_var(),
-    Res = new_var(),
-    {block, Lo,
-     [{match, Lo, X1, E1},
-      {'case', Lo, {'catch', Lo, {op, Lo, Op, X1}},
-       [{clause, -Lo, [{tuple, Lo, [{atom, Lo, 'EXIT'}, Rsn]}], [],
-	 [op_handler(Handler, M, F, A, Lo, Rsn, unop, Op, [X1])]},
-	{clause, -Lo, [Res], [], [Res]}]}
-     ]
-    }.
--else.
-%% R10: use try
-handle_unop(M, F, A, Lo, Op, E1, Handler) ->
-    Rsn = new_var(),
-    X1 = new_var(),
-    Res = new_var(),
-    {block, Lo,
-     [{match, Lo, X1, E1},
-      {'try', Lo,
-       [{op, Lo, Op, X1}],
-       [],
-       [{clause, 0, [exit_pat(Rsn)], [], 
-	 [op_handler(Handler, M, F, A, Lo, Rsn, unop, Op, [X1])]}],
-       []
-      }]}.
--endif.
+%% UNFINISHED
 
-handle_exit(M, F, A, Le, Rsn, Handler) ->
-    exit_handler(Handler, M, F, A, Le, Rsn).
+mk_binop(Op, X1, X2) ->
+    {op, -1, Op, X1, X2}.
 
-handle_fault(M, F, A, Le, Rsn, Handler) ->
-    fault_handler(Handler, M, F, A, Le, Rsn).
+%% UNFINISHED
 
--ifndef(r10).
-%% R9: catch and rethrow exception
-handle_bif(M, F, A, Lb, Mod, Fn, Ar, Args, Handler) ->
-    Xs = mk_vars(1, Ar),
-    BIF_call = {call, Lb,
-		{remote, Lb, {atom, Lb, Mod}, {atom, Lb, Fn}},
-		Xs},
-    Rsn = new_var(),
-    Res = new_var(),
-    {block, Lb,
-     [ {match, Lb, X, Arg} || {X, Arg} <- zip(Xs, Args) ]
-     ++ [{'case', Lb, {'catch', 0, BIF_call},
-	  [{clause, -Lb, [{tuple, Lb, [{atom, Lb, 'EXIT'}, Rsn]}], [],
-	    [op_handler(Handler, M, F, A, Lb, Rsn, bif, {Mod, Fn}, Xs)]},
-	   {clause, -Lb, [Res], [], [Res]}]}]
-    }.
--else.
-%% R10: use try
-handle_bif(M, F, A, Lb, Mod, Fn, Ar, Args, Handler) ->
-    Xs = mk_vars(1, Ar),
-    BIF_call = {call, Lb,
-		{remote, Lb, {atom, Lb, Mod}, {atom, Lb, Fn}},
-		Xs},
-    Rsn = new_var(),
-    Res = new_var(),
-    {block, Lb,
-     [ {match, Lb, X, Arg} || {X, Arg} <- zip(Xs, Args) ]
-     ++ 
-     [{'try', Lb, [BIF_call],
-       [],
-       [{clause, -Lb, [exit_pat(Rsn)], [], 
-	 [op_handler(Handler, M, F, A, Lb, Rsn, bif, {Mod, Fn}, Xs)]}],
-       []
-      }]}.
--endif.
+mk_unop(Op, X1) ->
+    {op, -1, Op, X1}.
 
--ifdef(r10).
-%% Internally, try clauses exit:Rsn are converted to {exit,Rsn,_}
-exit_pat(Rsn) ->
-    {tuple, 0, [{atom,0,exit},Rsn,{var,0,'_'}]}.
--endif.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Rewrite to
+%%   X1 = E1, 
+%%   try Unop(X1)
+%%   catch exit:Rsn -> exit({{M,F,A},{line,L},{Unop, X1}})
+%%         exit:Rsn -> error({{M,F,A},{line,L},{Unop, X1}})
+%%   end
 %%
-%% There are two versions of these.
-%% - first version: just exit with lots more information
-%% - second version: call smart_exc:handler(...)
+%% UNFINISHED
+%% - 'Rsn' seems amateurish
 
-%% For exit
-%%
-%% Note that Rsn is a syntax tree while the others are terms
+smart_unop(M, F, A, Line, Op, Expr) ->
+    X = new_var(),
+    Exn_term = exn_term({M, F, A}, {line, Line}, {var,-1,'Rsn'}),
+    {block, -1,
+     [{match, -1, X, Expr},
+      mk_try([mk_unop(Op, X)], [],
+	     [exn_handler(exit, 'Rsn', [mk_exit(Exn_term)]),
+	      exn_handler(error, 'Rsn', [mk_error(Exn_term)])],
+	     [])
+      ]}.
 
-exit_handler(Handler, M, F, A, Line, Rsn) ->
-    case ?exn_handler of
-	smart_exit ->
-	    Args = 
-		[ erl_parse:abstract(Term) 
-		  || Term <- [{M, F, A}, {line, Line}] ] ++ [Rsn],
-	    mk_exit(Line, Args);
-	smart_exc ->
-	    Args = 
-		[ erl_parse:abstract(Term) 
-		  || Term <- [M, F, A, Line] ] ++ [Rsn],
-	    mk_invoke(Line, Handler, Args)
-    end.
+%% Rewrite to exit({{M,F,A},{line, L}, Rsn})
+%% UNFINISHED
+%% - is Rsn abstract or concrete??
 
-%% For faults (special form of exits, {Rsn, CallStack})
+smart_exit(M, F, A, Line, Rsn) ->
+    Term = erl_parse:abstract({{M, F, A}, {line, Line}, Rsn}),
+    mk_remote_call(erlang, exit, [Term]).
 
-fault_handler(Handler, M, F, A, Line, Rsn) ->
-    case ?exn_handler of
-	smart_exit ->
-	    Args = 
-		[ erl_parse:abstract(Term) 
-		  || Term <- [{M, F, A}, {line, Line}] ] ++ [Rsn],
-	    mk_fault(Line, Args);
-	smart_exc ->
-	    Args = 
-		[ erl_parse:abstract(Term) 
-		  || Term <- [M, F, A, Line] ] ++ [Rsn],
-	    mk_invoke(Line, Handler, Args)
-    end.
+%% Rewrite to exit({{M,F,A},{line, L}, Rsn})
+%% UNFINISHED
 
-%% For clauses
-%%
-%% Rsn is an atom/term, while Exc_hd is a list of syntax
-%% trees (vars)
+smart_fault(M, F, A, Line, Rsn) ->
+    Term = erl_parse:abstract({{M, F, A}, {line, Line}, Rsn}),
+    mk_remote_call(erlang, fault, [Term]).
 
-clause_handler(Handler, M, F, A, Line, Rsn, Exc_hd) ->
-    case ?exn_handler of
-	smart_exit ->
-	    Args = [ erl_parse:abstract(Term) 
-		     || Term <- [{M, F, A}, {line, Line}, Rsn] ]
-		++ [cons_list(Exc_hd)],
-	    mk_exit(Line, Args);
-	smart_exc ->
-	    Args = [ erl_parse:abstract(Term) 
-		     || Term <- [M, F, A, Line, Rsn] ] 
-		++ [cons_list(Exc_hd)],
-	    mk_invoke(Line, Handler, Rsn, Args)
-    end.
+%% Rewrite to error({{M,F,A},{line, L}, Rsn})
+%% UNFINISHED
 
-%% For op/bif
-%%
-%% Note that Op term, Rsn syntax tree, while Exc_hd is a list of syntax
-%% trees (vars)
-%%
-%% Note: we should perhaps format the exception a wee bit differently.
-%% Currently: {..., {M,F}, As} should be {...,{M,F,As}}?
+smart_error(M, F, A, Line, Rsn) ->
+    Term = erl_parse:abstract({{M, F, A}, {line, Line}, Rsn}),
+    mk_remote_call(erlang, error, [Term]).
 
-op_handler(Handler, M, F, A, Line, Rsn, Ty, Op, Exc_hd) ->
-    case ?exn_handler of
-	smart_exit ->
-	    Args = [ erl_parse:abstract(Term) 
-		     || Term <- [{M, F, A}, {line, Line}] ]
-		++ [Rsn, erl_parse:abstract(Op), cons_list(Exc_hd)],
-	    mk_exit(Line, Args);
-	smart_exc ->
-	    Args = [ erl_parse:abstract(Term) 
-		     || Term <- [{M, F, A}, {line, Line}] ] 
-		++ [Rsn, erl_parse:abstract(Op), cons_list(Exc_hd)],
-	    mk_invoke(Line, Handler, Ty, Args)
-    end.
-
-mk_exit(Line, Args) ->
-    {call, Line, 
-     {atom, Line, exit}, 
-     [{tuple, Line, Args}]}.
-
-mk_fault(Line, Args) ->
-    {call, Line, 
-     {remote, Line, {atom, Line, erlang}, {atom, Line, fault}}, 
-     [{tuple, Line, Args}]}.
-
-mk_invoke(Line, Handler, Args) ->
-    mk_invoke(Line, Handler, exit, Args).
-
-mk_invoke(Line, Handler, Rsn, Args) ->
-    {call, Line, 
-     {remote, Line, {atom, Line, Handler}, {atom, Line, Rsn}}, 
-     Args}.
+exn_term(T1, T2, AbsT) ->
+    Abs_T1 = erl_parse:abstract(T1),
+    Abs_T2 = erl_parse:abstract(T2),
+    {tuple, -1, [Abs_T1, Abs_T2, AbsT]}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -632,12 +443,15 @@ clauses_arity([{clause, _, H, G, B}|_]) ->
 
 %%
 
-mk_vars(M,N) ->
+new_vars(N) ->
+    new_vars(1,N).
+
+new_vars(M,N) ->
     if
 	M > N ->
 	    [];
 	true ->
-	    [new_var()|mk_vars(M+1,N)]
+	    [new_var()|new_vars(M+1,N)]
     end.
 
 %%
@@ -689,7 +503,10 @@ cons_list([]) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%
-%% Simple version of mapform.erl:
+%% Simple version of mapform.erl
+%%
+%% NOTES
+%% - constant/1 has apparently been deprecated by some fool
 
 mapform0(F, {clause, Lc, H, G, B}) ->
     F({clause, Lc, H, G, mapform0(F, B)});
@@ -701,7 +518,7 @@ mapform0(F, T) when tuple(T) ->
     F(list_to_tuple([ mapform0(F, Tsub) || Tsub <- tuple_to_list(T) ]));
 mapform0(F, Xs) when list(Xs) ->
     [ mapform0(F, X) || X <- Xs ];
-mapform0(F, C) when constant(C) ->
+mapform0(F, C) when atom(C) ; number(C) ->
     C.
 
 %% detect + elide pattern in qualifier
@@ -710,3 +527,39 @@ mapform1(F, {generate, Lg, P, E}) ->
     {generate, Lg, P, mapform0(F, E)};
 mapform1(F, Qual) ->
     mapform0(F, Qual).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%% Compute the variables occurring in the term.
+%%  Variables are abstract vars, {var, _, X} where X is not '_'
+%%  while Term can be any term (possibly containing some variables
+%%  per above), but is probably an abstract syntax tree of some sort.
+%%
+%% Note: No handling of scoping, etc.
+%%
+%% This is just a heuristic to make the erlang compiler shut up. (Perhaps
+%% not needed anymore?)
+
+vars_of(AbsTerm) ->
+    FVs0 = vars_of(AbsTerm, []),
+    FVs = sets:to_list(sets:from_list(FVs0)),
+    FVs.
+
+vars_of({var, _, '_'}, Vs) ->
+    Vs;
+vars_of({var, _, X}=V, Vs) ->
+    [V|Vs];
+vars_of(T, Vs0) when tuple(T) ->
+    lists:foldl(
+      fun(Term, Vs) ->
+	      vars_of(Term, Vs)
+      end,
+      Vs0,
+      tuple_to_list(T));
+vars_of([X|Xs], Vs) ->
+    vars_of(Xs, vars_of(X, Vs));
+vars_of([], Vs) ->
+    Vs;
+vars_of(X, Vs) ->
+    %% cannot be a variable or contain a variable
+    Vs.

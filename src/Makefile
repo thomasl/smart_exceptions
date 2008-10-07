@@ -1,15 +1,14 @@
-# ERLC_FLAGS += -pa ../ebin
+ERLC=erlc
+ERLC_OPTS=-o ../ebin +nowarn_unused_vars
+ERL_SRC = smart_exceptions.erl mapform0.erl
+OBJS := $(patsubst %.erl,../ebin/%.beam,$(ERL_SRC))
 
-# ok, a bit clumsy
+../ebin/%.beam: %.erl
+	$(ERLC) $(ERLC_OPTS) $<
 
-all: ../ebin/smart_exceptions.beam ../ebin/mapform0.beam
-
-../ebin/smart_exceptions.beam:
-	erlc -o ../ebin smart_exceptions.erl
-
-../ebin/mapform0.beam:
-	erlc -o ../ebin mapform0.erl
+# .app file?
+all:	$(OBJS)
 
 clean:
-	-rm -f ../ebin/*
+	rm -f ../ebin/*
 
