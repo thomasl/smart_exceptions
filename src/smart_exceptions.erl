@@ -158,7 +158,7 @@ resolve_calls(Forms, FuncDefs) ->
 %% Resolve imports to remote calls. Note that we FIRST check whether
 %% a local is a call to an erlang BIF. If so, the call is made to
 %% erlang:f(...). This is deliberate, since Erlang itself behaves that way.
-%% (Doing so is also arguable the wrong thing.)
+%% (Doing so also makes a mockery of scoping.)
 
 resolve_form({function, _Lf, Fn, Ar, _Clss} = Form, FuncDefs) ->
     mapform0(
