@@ -53,14 +53,13 @@
 %%
 %% Third version of smart_exceptions: here, we get rid of the Handler
 %% argument and the R9/R10 stuff (we always use try ... end) as well
-%% as the use of the mapform module (which is proprietary).
+%% as the use of the mapform module (which is proprietary). This means
+%% more straightforward code and easy use in R12, as well as getting
+%% rid of a pesky bug regarding throw/1.
 %%
 %% UNFINISHED
-%% - some handlers missing or bad
-%% - (P = E) must extract all variables X1..Xn in P and generate
-%%      exit(EXIT), X1=nyi, ..., Xn = nyi
-%%   to satisfy the compiler
-%% - untested ...
+%% - list comprehensions?
+%% - some testing done, but needs more cases; should be more systematic
 
 -module(smart_exceptions).
 -author('thomasl_erlang@yahoo.com').
@@ -334,13 +333,14 @@ smart_function(M, F, A, Line, Clss) ->
 %%   end
 %%
 %% UNFINISHED - 
-%% - 'Rsn' seems amateurish
-%% - Exn_term contains the abstract Xs
+%% - format of returned Rsn
 
 smart_bif(M, F, A, Line, Mod, Func, Arity, Args) ->
     Xs = new_vars(Arity),
     Evals = [ {match, -1, X, Arg} || {X, Arg} <- lists:zip(Xs, Args) ],
     Rsn = new_var(),
+    %% currently returns {{bif, M, F, [X1,...,Xn]}, Rsn}
+    %% should it be {bif, {M, F, [X1,...,Xn]}, Rsn}? something else?
     Bif = {tuple, -1,
 	   [{tuple, -1, [{atom, -1, bif}, 
 			 {atom, -1, Mod}, 
@@ -367,14 +367,14 @@ mk_remote_call(M, F, Xs) ->
 %%   end
 %%
 %% UNFINISHED
-%% - 'Rsn' seems amateurish
-%% - Exn_term seems weird, where are X1,X2 ...
+%% - Exn_term
 
 smart_binop(M, F, A, Line, Op, E1, E2) ->
     X1 = new_var(),
     X2 = new_var(),
     Rsn = new_var(),
-    Exn_term = exn_term({M, F, A}, {line, Line}, Rsn),
+    Exn_rsn = exn_tuple([binop, Op, X1, X2], Rsn),
+    Exn_term = exn_term({M, F, A}, {line, Line}, Exn_rsn),
     {block, -1,
      [{match, -1, X1, E1},
       {match, -1, X2, E2},
@@ -384,12 +384,8 @@ smart_binop(M, F, A, Line, Op, E1, E2) ->
 	     [])
       ]}.
 
-%% UNFINISHED
-
 mk_binop(Op, X1, X2) ->
     {op, -1, Op, X1, X2}.
-
-%% UNFINISHED
 
 mk_unop(Op, X1) ->
     {op, -1, Op, X1}.
@@ -401,11 +397,14 @@ mk_unop(Op, X1) ->
 %%         exit:Rsn -> error({{M,F,A},{line,L},{Unop, X1}})
 %%   end
 %%
+%% UNFINISHED
+%% - Exn_term
 
 smart_unop(M, F, A, Line, Op, Expr) ->
     X = new_var(),
     Rsn = new_var(),
-    Exn_term = exn_term({M, F, A}, {line, Line}, Rsn),
+    Exn_rsn = exn_tuple([unop, Op, X], Rsn),
+    Exn_term = exn_term({M, F, A}, {line, Line}, Exn_rsn),
     {block, -1,
      [{match, -1, X, Expr},
       mk_try([mk_unop(Op, X)], [],
@@ -418,29 +417,29 @@ smart_unop(M, F, A, Line, Op, Expr) ->
 %%   where AbsRsn is already abstracted
 
 smart_exit(M, F, A, Line, AbsRsn) ->
-    T1 = erl_parse:abstract({M, F, A}),
-    T2 = erl_parse:abstract({line, Line}),
-    Term = {tuple, -1, [T1, T2, AbsRsn]},
+    Term = exn_term({M, F, A}, {line, Line}, AbsRsn),
     mk_remote_call(erlang, exit, [Term]).
 
-%% Rewrite to exit({{M,F,A},{line, L}, Rsn})
-%% UNFINISHED
+%% Rewrite to fault({{M,F,A},{line, L}, Rsn})
 
-smart_fault(M, F, A, Line, Rsn) ->
-    Term = erl_parse:abstract({{M, F, A}, {line, Line}, Rsn}),
+smart_fault(M, F, A, Line, AbsRsn) ->
+    Term = exn_term({M, F, A}, {line, Line}, AbsRsn),
     mk_remote_call(erlang, fault, [Term]).
 
 %% Rewrite to error({{M,F,A},{line, L}, Rsn})
-%% UNFINISHED
 
-smart_error(M, F, A, Line, Rsn) ->
-    Term = erl_parse:abstract({{M, F, A}, {line, Line}, Rsn}),
+smart_error(M, F, A, Line, AbsRsn) ->
+    Term = exn_term({M, F, A}, {line, Line}, AbsRsn),
     mk_remote_call(erlang, error, [Term]).
 
+%% Rewrite into a tuple where all args except last (AbsT, Abs) are
+%% concrete terms. AbsT, Abs are abstract terms.
+
 exn_term(T1, T2, AbsT) ->
-    Abs_T1 = erl_parse:abstract(T1),
-    Abs_T2 = erl_parse:abstract(T2),
-    {tuple, -1, [Abs_T1, Abs_T2, AbsT]}.
+    exn_tuple([T1, T2], AbsT).
+
+exn_tuple(Concs, Abs) ->
+    {tuple, -1, [ erl_parse:abstract(Conc) || Conc <- Concs ] ++ [Abs]}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
