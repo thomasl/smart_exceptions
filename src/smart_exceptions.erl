@@ -83,6 +83,13 @@ parse_transform(Forms, Opts) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+file(File, Opts) ->
+    Forms = parse:file(File, Opts),
+    NewForms = parse_transform(Forms, Opts),
+    parse:print(parse:reattribute(NewForms)).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 forms(M, Forms0) when atom(M) ->
     Forms = simple_resolve_imports(Forms0),
     [ form(M, Form) || Form <- Forms ].
@@ -109,13 +116,13 @@ form(M, Form) ->
 	 ({op,Lo,Op,E1}=E) ->
 	      smart_unop(M, F, A, Lo, Op, E1);
 	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,exit}},[Rsn]}=E) ->
-	      smart_exit(M, F, A, Lc, Rsn);
+	      smart_exit_abs(M, F, A, Lc, Rsn);
 	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,fault}},[Rsn]}=E) ->
 	      smart_fault(M, F, A, Lc, Rsn);
 	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,error}},[Rsn]}=E) ->
 	      smart_error(M, F, A, Lc, Rsn);
 	 ({call,Lc,{atom,Lf,exit},[Rsn]}=E) ->
-	      smart_exit(M, F, A, Lc, Rsn);
+	      smart_exit_abs(M, F, A, Lc, Rsn);
 	 ({call,Lc,{remote,Lr,{atom,Lm,Mod},{atom,Lf,Fn}},As}=E) ->
 	      case erlang:is_builtin(Mod, Fn, length(As)) of
 		  true ->
@@ -210,22 +217,16 @@ resolve_form(Form, FuncDefs) ->
 %% What we want to do is convert this macro into rewrite rules
 %% that we can apply to all the relevant locations.
 
-%% Expr generates exit({{M,F,A}, {line, L}, Rsn})
-%% M,F,A,Line,Rsn must be abstracted; Expr is already an abstract expr
-
-smart_expr(M, F, A, Line, Rsn, Expr) ->
-    Exn_term = erl_parse:abstract({{M,F,A}, {line, Line}, Rsn}),
-    mk_try([Expr], [],
-	   [exn_handler(exit, 'Rsn', [mk_exit(Exn_term)]),
-	    exn_handler(error, 'Rsn', [mk_error(Exn_term)])],
-	   []).
-
 mk_try(Exprs, Cases, Exn_handlers, After) ->
     {'try', -1, Exprs, Cases, Exn_handlers, After}.
 
-exn_handler(Type, Var, Body) ->
+%% Type of exception is the atom Type.
+%% The exception reason is caught as Rsn.
+%% Body is what we do with it (should involve Rsn).
+
+exn_handler(Type, Rsn, Body) ->
     {clause, -1, 
-     [{tuple, -1, [{atom, -1, Type}, {var, -1, Var}, {var, -1, '_'}]}],
+     [{tuple, -1, [{atom, -1, Type}, Rsn, {var, -1, '_'}]}],
      [],
      Body}.
 
@@ -250,7 +251,7 @@ smart_match(M, F, A, Line, Pat, Expr) ->
     {'case', -1, Expr,
      [{clause, -1, [{match,-1,Pat,X}], [], [X]},
       {clause, -1, [X], [], 
-       [smart_exit(M, F, A, Line, AbsMatch)] ++
+       [smart_exit_abs(M, F, A, Line, AbsMatch)] ++
        [ {match, -1, Y, {atom, -1, nyi}} || Y <- FVs ]}]}.
 
 %% M, F, A, Line, Rsn are concrete; Expr and Clss are abstract
@@ -290,9 +291,8 @@ smart_fun(M, F, A, Line, Clss) ->
     Fun_args = {tuple, -1, [{atom, -1, fun_clause}] ++ Xs},
     Term = exn_term({M, F, A}, {line, Line}, Fun_args),
     {'fun', -1,
-     Clss ++
-     [{clause, -1, Xs, [],
-       [mk_exit(Term)]}]}.
+     {clauses, 
+      Clss ++ [{clause, -1, Xs, [], [mk_exit(Term)]}]}}.
 
 %% Same as above, but preserves Info field too
 %%
@@ -305,9 +305,8 @@ smart_fun(M, F, A, Line, Clss, Info) ->
     Fun_args = {tuple, -1, [{atom, -1, fun_clause}, cons_list(Xs)]},
     Term = exn_term({M, F, A}, {line, Line}, Fun_args),
     {'fun', -1,
-     Clss ++
-     [{clause, -1, Xs, [],
-       [mk_exit(Term)]}], 
+     {clauses,
+      Clss ++ [{clause, -1, Xs, [], [mk_exit(Term)]}]}, 
      Info}.
 
 %% F(P1,...,Pk) -> B end
@@ -341,14 +340,17 @@ smart_function(M, F, A, Line, Clss) ->
 smart_bif(M, F, A, Line, Mod, Func, Arity, Args) ->
     Xs = new_vars(Arity),
     Evals = [ {match, -1, X, Arg} || {X, Arg} <- lists:zip(Xs, Args) ],
-    Bif = {tuple, -1, [{atom, -1, bif}, {atom, -1, F}, cons_list(Xs)]},
+    Rsn = new_var(),
+    Bif = {tuple, -1,
+	   [{tuple, -1, [{atom, -1, bif}, {atom, -1, F}, cons_list(Xs)]},
+	    Rsn]},
     Exn_term = exn_term({M, F, A}, {line, Line}, Bif),
     {block, -1,
      Evals ++
      [mk_try([mk_remote_call(Mod, Func, Xs)],
 	     [],
-	     [exn_handler(exit, 'Rsn', [mk_exit(Exn_term)]),
-	      exn_handler(error, 'Rsn', [mk_error(Exn_term)])],
+	     [exn_handler(exit, Rsn, [mk_exit(Exn_term)]),
+	      exn_handler(error, Rsn, [mk_error(Exn_term)])],
 	     [])]}.
 
 mk_remote_call(M, F, Xs) ->
@@ -368,13 +370,14 @@ mk_remote_call(M, F, Xs) ->
 smart_binop(M, F, A, Line, Op, E1, E2) ->
     X1 = new_var(),
     X2 = new_var(),
-    Exn_term = exn_term({M, F, A}, {line, Line}, {var, -1, 'Rsn'}),
+    Rsn = new_var(),
+    Exn_term = exn_term({M, F, A}, {line, Line}, Rsn),
     {block, -1,
      [{match, -1, X1, E1},
       {match, -1, X2, E2},
       mk_try([mk_binop(Op, X1, X2)], [],
-	     [exn_handler(exit, 'Rsn', [mk_exit(Exn_term)]),
-	      exn_handler(error, 'Rsn', [mk_error(Exn_term)])],
+	     [exn_handler(exit, Rsn, [mk_exit(Exn_term)]),
+	      exn_handler(error, Rsn, [mk_error(Exn_term)])],
 	     [])
       ]}.
 
@@ -395,17 +398,16 @@ mk_unop(Op, X1) ->
 %%         exit:Rsn -> error({{M,F,A},{line,L},{Unop, X1}})
 %%   end
 %%
-%% UNFINISHED
-%% - 'Rsn' seems amateurish
 
 smart_unop(M, F, A, Line, Op, Expr) ->
     X = new_var(),
-    Exn_term = exn_term({M, F, A}, {line, Line}, {var,-1,'Rsn'}),
+    Rsn = new_var(),
+    Exn_term = exn_term({M, F, A}, {line, Line}, Rsn),
     {block, -1,
      [{match, -1, X, Expr},
       mk_try([mk_unop(Op, X)], [],
-	     [exn_handler(exit, 'Rsn', [mk_exit(Exn_term)]),
-	      exn_handler(error, 'Rsn', [mk_error(Exn_term)])],
+	     [exn_handler(exit, Rsn, [mk_exit(Exn_term)]),
+	      exn_handler(error, Rsn, [mk_error(Exn_term)])],
 	     [])
       ]}.
 
@@ -415,6 +417,12 @@ smart_unop(M, F, A, Line, Op, Expr) ->
 
 smart_exit(M, F, A, Line, Rsn) ->
     Term = erl_parse:abstract({{M, F, A}, {line, Line}, Rsn}),
+    mk_remote_call(erlang, exit, [Term]).
+
+smart_exit_abs(M, F, A, Line, AbsRsn) ->
+    T1 = erl_parse:abstract({M, F, A}),
+    T2 = erl_parse:abstract({line, Line}),
+    Term = {tuple, -1, [T1, T2, AbsRsn]},
     mk_remote_call(erlang, exit, [Term]).
 
 %% Rewrite to exit({{M,F,A},{line, L}, Rsn})
