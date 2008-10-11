@@ -116,13 +116,13 @@ form(M, Form) ->
 	 ({op,Lo,Op,E1}=E) ->
 	      smart_unop(M, F, A, Lo, Op, E1);
 	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,exit}},[Rsn]}=E) ->
-	      smart_exit_abs(M, F, A, Lc, Rsn);
+	      smart_exit(M, F, A, Lc, Rsn);
 	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,fault}},[Rsn]}=E) ->
 	      smart_fault(M, F, A, Lc, Rsn);
 	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,error}},[Rsn]}=E) ->
 	      smart_error(M, F, A, Lc, Rsn);
 	 ({call,Lc,{atom,Lf,exit},[Rsn]}=E) ->
-	      smart_exit_abs(M, F, A, Lc, Rsn);
+	      smart_exit(M, F, A, Lc, Rsn);
 	 ({call,Lc,{remote,Lr,{atom,Lm,Mod},{atom,Lf,Fn}},As}=E) ->
 	      case erlang:is_builtin(Mod, Fn, length(As)) of
 		  true ->
@@ -251,7 +251,7 @@ smart_match(M, F, A, Line, Pat, Expr) ->
     {'case', -1, Expr,
      [{clause, -1, [{match,-1,Pat,X}], [], [X]},
       {clause, -1, [X], [], 
-       [smart_exit_abs(M, F, A, Line, AbsMatch)] ++
+       [smart_exit(M, F, A, Line, AbsMatch)] ++
        [ {match, -1, Y, {atom, -1, nyi}} || Y <- FVs ]}]}.
 
 %% M, F, A, Line, Rsn are concrete; Expr and Clss are abstract
@@ -342,7 +342,10 @@ smart_bif(M, F, A, Line, Mod, Func, Arity, Args) ->
     Evals = [ {match, -1, X, Arg} || {X, Arg} <- lists:zip(Xs, Args) ],
     Rsn = new_var(),
     Bif = {tuple, -1,
-	   [{tuple, -1, [{atom, -1, bif}, {atom, -1, F}, cons_list(Xs)]},
+	   [{tuple, -1, [{atom, -1, bif}, 
+			 {atom, -1, Mod}, 
+			 {atom, -1, Func}, 
+			 cons_list(Xs)]},
 	    Rsn]},
     Exn_term = exn_term({M, F, A}, {line, Line}, Bif),
     {block, -1,
@@ -411,15 +414,10 @@ smart_unop(M, F, A, Line, Op, Expr) ->
 	     [])
       ]}.
 
-%% Rewrite to exit({{M,F,A},{line, L}, Rsn})
-%% UNFINISHED
-%% - is Rsn abstract or concrete??
+%% Rewrite to exit({{M,F,A},{line, L}, AbsRsn})
+%%   where AbsRsn is already abstracted
 
-smart_exit(M, F, A, Line, Rsn) ->
-    Term = erl_parse:abstract({{M, F, A}, {line, Line}, Rsn}),
-    mk_remote_call(erlang, exit, [Term]).
-
-smart_exit_abs(M, F, A, Line, AbsRsn) ->
+smart_exit(M, F, A, Line, AbsRsn) ->
     T1 = erl_parse:abstract({M, F, A}),
     T2 = erl_parse:abstract({line, Line}),
     Term = {tuple, -1, [T1, T2, AbsRsn]},
