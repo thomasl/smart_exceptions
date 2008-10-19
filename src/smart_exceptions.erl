@@ -1,5 +1,5 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% @copyright Copyright(C) 2003-2005 Thomas Lindgren <thomasl_erlang@yahoo.com>.
+%% @copyright Copyright(C) 2003-2008 Thomas Lindgren <thomasl_erlang@yahoo.com>.
 %% @license
 %% All rights reserved.
 %%
@@ -29,7 +29,7 @@
 %%
 %%			   SMART EXCEPTIONS
 %%
-%% Author: Thomas Lindgren (030414-; 051016; 081004)
+%% Author: Thomas Lindgren (030414-; 051016; 081004 [2.0])
 %%
 %% A simplified version of the earlier smart_exceptions, twice.
 %%
@@ -64,6 +64,7 @@
 -module(smart_exceptions).
 -author('thomasl_erlang@yahoo.com').
 -export([parse_transform/2]).
+-version({2,0,0}).
 -compile(export_all).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -136,12 +137,7 @@ form(M, Form) ->
 		      E
 	      end;
 	 ({bin, Lb, BinElts}=E) ->
-	      %% transform binary expressions
-	      %% - if this occurs in a pattern, we get bad output
-	      %% - if we want to use it, we need to avoid processing
-	      %%   patterns, or must reverse the transform there
-	      %%  smart_bin(M, F, A, Lb, E);
-	      E;
+	      smart_bin(M, F, A, Lb, E);
 	 (E) ->
 	      E
       end,
@@ -458,20 +454,100 @@ exn_tuple(Concs, Abs) ->
 %% dozen variables), we should generate something informative
 %% as well as indicate the location.
 %%
+%% We assume that the binary expression only throws an 'error'.
+%% This seems to hold for R12, at least, and saves us some code
+%% duplication.
+%%
 %% UNFINISHED
-%% - what should a better error look like?
-%%   * option 2: extract the variables, their values and their
-%%     intended types to clarify the error
-%% - how do we then extract the free vars properly?
-%%   given that the BinElts may defined and use vars
+%% - we could use the element type specs to ferret out which values are
+%%   inappropriate (one or more) and just return those
+%%   * something similar was optionally done in version 1.0 for BIFs
+%%   * left for "future work"
 
 smart_bin(M, F, A, Line, {bin, _Lb, BinElts}=Expr) ->
     Rsn = new_var(),
-    Exn_term = exn_term({M, F, A}, {line, Line}, Rsn),
+    Exn_rsn = bin_error(Expr, Rsn),
+    Exn_term = exn_term({M, F, A}, {line, Line}, Exn_rsn),
     mk_try([Expr], [],
-	   [exn_handler(exit,  Rsn, [mk_exit(Exn_term)]),
-	    exn_handler(error, Rsn, [mk_error(Exn_term)])],
+	   %% [exn_handler(exit,  Rsn, [mk_exit(Exn_term)]),
+	   [exn_handler(error, Rsn, [mk_error(Exn_term)])],
 	   []).
+
+
+bin_error({bin, Lb, BinElts}=Expr, AbsRsn) ->
+    %% io:format("%% decorating ~w\n", [Expr]),
+    {tuple, -1,
+     lists:flatten(
+       [ bin_indicator(P, Lbe, Type, Width)
+	 || {bin_element, Lbe, P, Type, Width} <- BinElts ]) ++ [AbsRsn]}.
+
+%% Emit variable name, value and expected type/width for all elements.
+%% Note that the Type and Width arguments are a bit underspecified,
+%% so we basically emit them at will and hope they are reasonably
+%% legible. [Improve as needed.]
+
+bin_indicator({var, Lx, X}=Var, Line, Width, Type) when X =/= '_' ->
+    exn_tuple([X, bin_type_summary(Width, Type)], Var);
+bin_indicator({integer, _Lc, _C}, _Line, _Type, _Width) ->
+    [];
+bin_indicator(P, Line, Type, Width) ->
+    io:format("%% bin_indicator: skipped unknown pattern"
+	      " ~w on line ~w\n", [P, Line]),
+    [].
+
+%% The default values are just guessed at this point
+%% - assume the default type to be unsigned-big
+%% - assume default width to be 8 bits (byte)
+%%
+%% UNFINISHED
+%% - short widths do not require endianness; we could
+%%   emit a more concise type in this case
+%%   * could also just skip endianness; sign + size sufficient for debug?
+
+bin_type_summary(default, [binary]) ->
+    binary;
+bin_type_summary({integer, Line, Width}, [binary]) ->
+    {binary, Width};
+bin_type_summary({integer, _Line, Width}, default) ->
+    {default_bin_type(), Width};
+bin_type_summary({integer, _Line, Width}, Type) ->
+    {Type, Width};
+bin_type_summary(default, default) ->
+    resolve_default_width({default_bin_type(), default});
+bin_type_summary(default, TypeSegs) ->
+    resolve_default_width(
+      lists:foldr(
+	fun({Last, Width}, unknown) ->
+		%% must be final item or we die
+		{[Last], Width};
+	   (Last, unknown) ->
+		%% must be final item or we die
+		{[Last], default};
+	   (Seg, {Segs, Width}) ->
+		{[Seg|Segs], Width}
+	end,
+	unknown,
+	TypeSegs));
+bin_type_summary(Type, W) ->
+    io:format("%% unknown type summarized as self: ~w\n", [Type]),
+    {Type, W}.
+
+%% UNFINISHED
+%% - an educated guess that this is the default type
+
+default_bin_type() ->
+    [unsigned,big].
+
+%% Resolve default type into a width appropriate for the code
+%% - we ASSUME that Type is an integer of some sort, where default
+%%   is ASSUMED to be 8
+%% (- binaries never occur, since they are resolved beforehand in
+%%    bin_type_summary/2)
+
+resolve_default_width({Type, default}) ->
+    {Type, 8};
+resolve_default_width(TypeWidth) ->
+    TypeWidth.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -601,3 +677,4 @@ vars_of([], Vs) ->
 vars_of(X, Vs) ->
     %% cannot be a variable or contain a variable
     Vs.
+
