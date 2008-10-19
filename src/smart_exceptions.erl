@@ -83,9 +83,10 @@ parse_transform(Forms, Opts) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 file(File, Opts) ->
-    Forms = parse:file(File, Opts),
-    NewForms = parse_transform(Forms, Opts),
-    parse:print(parse:reattribute(NewForms)).
+    {Mod, Exp, Forms, Misc} = parse:file(File, Opts),
+    NewForms = forms(Mod, Forms),
+    NewMod = {Mod, Exp, NewForms, Misc},
+    parse:print(NewMod).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -134,6 +135,13 @@ form(M, Form) ->
 		  false ->
 		      E
 	      end;
+	 ({bin, Lb, BinElts}=E) ->
+	      %% transform binary expressions
+	      %% - if this occurs in a pattern, we get bad output
+	      %% - if we want to use it, we need to avoid processing
+	      %%   patterns, or must reverse the transform there
+	      %%  smart_bin(M, F, A, Lb, E);
+	      E;
 	 (E) ->
 	      E
       end,
@@ -242,10 +250,8 @@ mk_error(Term) ->
 mk_nonlocal(Ty, Term) ->
     mk_remote_call(erlang, Ty, [Term]).
 
-%% UNFINISHED
-%% - becomes (case Expr of Pat -> ok ; Val -> EXIT)
-%%   where Val must export all the variables in Pat ...
-%%     use free_vars(Pat, []) + generate matches
+%% P = E becomes
+%% (case E of P=X -> X; _ -> exit(...));
 
 smart_match(M, F, A, Line, Pat, Expr) ->
     X = new_var(),
@@ -445,6 +451,28 @@ exn_term(T1, T2, AbsT) ->
 exn_tuple(Concs, Abs) ->
     {tuple, -1, [ erl_parse:abstract(Conc) || Conc <- Concs ] ++ [Abs]}.
 
+%% Rewrite a binop into something that catches errors and
+%% indicates the fault. Currently just wraps the error.
+%%
+%% Note: since binary expressions may be quite large (e.g., a
+%% dozen variables), we should generate something informative
+%% as well as indicate the location.
+%%
+%% UNFINISHED
+%% - what should a better error look like?
+%%   * option 2: extract the variables, their values and their
+%%     intended types to clarify the error
+%% - how do we then extract the free vars properly?
+%%   given that the BinElts may defined and use vars
+
+smart_bin(M, F, A, Line, {bin, _Lb, BinElts}=Expr) ->
+    Rsn = new_var(),
+    Exn_term = exn_term({M, F, A}, {line, Line}, Rsn),
+    mk_try(Expr, [],
+	   [exn_handler(exit,  Rsn, [mk_exit(Exn_term)]),
+	    exn_handler(error, Rsn, [mk_error(Exn_term)])],
+	   []).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 clauses_arity([{clause, _, H, G, B}|_]) ->
@@ -515,7 +543,8 @@ cons_list([]) ->
 %% Simple version of mapform.erl
 %%
 %% NOTES
-%% - constant/1 has apparently been deprecated by some fool
+%% - constant/1 has apparently been deprecated by some fool, thus
+%%    atom ; number
 
 mapform0(F, {clause, Lc, H, G, B}) ->
     F({clause, Lc, H, G, mapform0(F, B)});
