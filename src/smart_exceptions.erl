@@ -468,7 +468,7 @@ exn_tuple(Concs, Abs) ->
 smart_bin(M, F, A, Line, {bin, _Lb, BinElts}=Expr) ->
     Rsn = new_var(),
     Exn_term = exn_term({M, F, A}, {line, Line}, Rsn),
-    mk_try(Expr, [],
+    mk_try([Expr], [],
 	   [exn_handler(exit,  Rsn, [mk_exit(Exn_term)]),
 	    exn_handler(error, Rsn, [mk_error(Exn_term)])],
 	   []).
