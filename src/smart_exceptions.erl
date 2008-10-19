@@ -58,8 +58,11 @@
 %% rid of a pesky bug regarding throw/1.
 %%
 %% UNFINISHED
+%% - we assume that BIF, operator, binary expr and clause match
+%%   failures generate (only) errors, not exits; this seems to be
+%%   the case but has not been verified
+%% - we assume default types and widths for bin exprs, can we do that?
 %% - list comprehensions?
-%% - some testing done, but needs more cases; should be more systematic
 
 -module(smart_exceptions).
 -author('thomasl_erlang@yahoo.com').
@@ -449,23 +452,16 @@ exn_term(T1, T2, AbsT) ->
 exn_tuple(Concs, Abs) ->
     {tuple, -1, [ erl_parse:abstract(Conc) || Conc <- Concs ] ++ [Abs]}.
 
-%% Rewrite a binop into something that catches errors and
-%% indicates the fault. Currently just wraps the error.
-%%
-%% Note: since binary expressions may be quite large (e.g., a
-%% dozen variables), we should generate something informative
-%% as well as indicate the location.
-%%
-%% We assume that the binary expression only throws an 'error'.
-%% This seems to hold for R12, at least, and saves us some code
-%% duplication.
+%% Rewrite a binop into something that catches errors and indicates
+%% the fault. Since binary expressions may be quite large (e.g., a
+%% dozen variables), we should generate something informative as well
+%% as indicate the location.
 %%
 %% UNFINISHED
 %% - we could use the element type specs to ferret out which values are
 %%   inappropriate (one or more) and just return those
 %%   * something similar was optionally done in version 1.0 for BIFs
 %%   * left for "future work"
-%% - we assume the expr generates an error if it fails
 
 smart_bin(M, F, A, Line, {bin, _Lb, BinElts}=Expr) ->
     Rsn = new_var(),
