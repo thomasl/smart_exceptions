@@ -256,7 +256,7 @@ smart_match(M, F, A, Line, Pat, Expr) ->
     {'case', -1, Expr,
      [{clause, -1, [{match,-1,Pat,X}], [], [X]},
       {clause, -1, [X], [], 
-       [smart_exit(M, F, A, Line, AbsMatch)] ++
+       [smart_error(M, F, A, Line, AbsMatch)] ++
        [ {match, -1, Y, {atom, -1, nyi}} || Y <- FVs ]}]}.
 
 %% M, F, A, Line, Rsn are concrete; Expr and Clss are abstract
@@ -271,7 +271,7 @@ smart_case(M, F, A, Line, Expr, Clss) ->
     Term = exn_term({M, F, A}, {line, Line}, Case_term),
     {'case', -1, Expr,
      Clss ++
-     [{clause, -1, [X], [], [mk_exit(Term)]}]}.
+     [{clause, -1, [X], [], [mk_error(Term)]}]}.
 
 %% M, F, A, Line, Rsn are concrete; Expr and Clss are abstract
 %% Note: the Expr is already rewritten
@@ -284,7 +284,7 @@ smart_if(M, F, A, Line, Clss) ->
     {'if', -1,
      Clss ++
      [{clause, -1, [], [],
-       [mk_exit(Term)]}]}.
+       [mk_error(Term)]}]}.
 
 %% fun(P1,...,Pk) -> B end
 %% add extra clause:
@@ -297,7 +297,7 @@ smart_fun(M, F, A, Line, Clss) ->
     Term = exn_term({M, F, A}, {line, Line}, Fun_args),
     {'fun', -1,
      {clauses, 
-      Clss ++ [{clause, -1, Xs, [], [mk_exit(Term)]}]}}.
+      Clss ++ [{clause, -1, Xs, [], [mk_error(Term)]}]}}.
 
 %% Same as above, but preserves Info field too
 %%
@@ -311,7 +311,7 @@ smart_fun(M, F, A, Line, Clss, Info) ->
     Term = exn_term({M, F, A}, {line, Line}, Fun_args),
     {'fun', -1,
      {clauses,
-      Clss ++ [{clause, -1, Xs, [], [mk_exit(Term)]}]}, 
+      Clss ++ [{clause, -1, Xs, [], [mk_error(Term)]}]}, 
      Info}.
 
 %% F(P1,...,Pk) -> B end
@@ -326,7 +326,7 @@ smart_function(M, F, A, Line, Clss) ->
     {function, Line, F, A,
      Clss ++
      [{clause, -1, Xs, [],
-       [mk_exit(Term)]}]}.
+       [mk_error(Term)]}]}.
 
 %% M, F, A, Line, Rsn are concrete; F and [A1,..,An] are abstract
 %% A call F(E1,..,En) generates {{M,F,A},{line,L},[E1,..,En],Rsn}
