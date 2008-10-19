@@ -56,6 +56,7 @@
 %% as the use of the mapform module (which is proprietary). This means
 %% more straightforward code and easy use in R12, as well as getting
 %% rid of a pesky bug regarding throw/1.
+%%   This is set as version {2,0,0}.
 %%
 %% UNFINISHED
 %% - we assume that BIF, operator, binary expr and clause match
@@ -337,13 +338,12 @@ smart_function(M, F, A, Line, Clss) ->
 %% Rewrite to
 %%   X1 = E1, ..., Xn = En,
 %%   try F(X1,...,Xn)
-%%   catch exit:Rsn -> exit({{M,F,A},{line,L},{bif, F, Xs}})
-%%         exit:Rsn -> error({{M,F,A},{line,L},{bif, F, Xs}})
+%%   catch
+%%         error:Rsn -> error({{M,F,A},{line,L},{bif, F, Xs}})
 %%   end
 %%
 %% UNFINISHED - 
 %% - format of returned Rsn
-%% - we assume the expr generates an error if it fails
 
 smart_bif(M, F, A, Line, Mod, Func, Arity, Args) ->
     Xs = new_vars(Arity),
@@ -356,7 +356,7 @@ smart_bif(M, F, A, Line, Mod, Func, Arity, Args) ->
 			 {atom, -1, Mod}, 
 			 {atom, -1, Func}, 
 			 cons_list(Xs)]},
-	    Rsn]},
+	    {tuple, -1, [{atom, -1, reason}, Rsn]}]},
     Exn_term = exn_term({M, F, A}, {line, Line}, Bif),
     {block, -1,
      Evals ++
@@ -372,19 +372,20 @@ mk_remote_call(M, F, Xs) ->
 %% Rewrite to
 %%   X1 = E1, X2 = E2,
 %%   try X1 Binop X2 
-%%   catch exit:Rsn -> exit({{M,F,A},{line,L},{Binop, X1, X2}})
-%%         exit:Rsn -> error({{M,F,A},{line,L},{Binop, X1, X2}})
+%%   catch 
+%%         error:Rsn -> error({{M,F,A},{line,L},{Binop, X1, X2}})
 %%   end
 %%
 %% UNFINISHED
 %% - Exn_term
-%% - we assume the expr generates an error if it fails
 
 smart_binop(M, F, A, Line, Op, E1, E2) ->
     X1 = new_var(),
     X2 = new_var(),
     Rsn = new_var(),
-    Exn_rsn = exn_tuple([binop, Op, X1, X2], Rsn),
+    Exn_rsn = {tuple, -1,
+	       [{atom, -1, binop}, {atom, -1, Op}, cons_list([X1, X2]), 
+		{tuple, -1, [{atom, -1, reason}, Rsn]}]},
     Exn_term = exn_term({M, F, A}, {line, Line}, Exn_rsn),
     {block, -1,
      [{match, -1, X1, E1},
@@ -414,7 +415,9 @@ mk_unop(Op, X1) ->
 smart_unop(M, F, A, Line, Op, Expr) ->
     X = new_var(),
     Rsn = new_var(),
-    Exn_rsn = exn_tuple([unop, Op, X], Rsn),
+    Exn_rsn = {tuple, -1,
+	       [{atom, -1, unop}, {atom, -1, Op}, cons_list([X]), 
+		{tuple, -1, [{atom, -1, reason}, Rsn]}]},
     Exn_term = exn_term({M, F, A}, {line, Line}, Exn_rsn),
     {block, -1,
      [{match, -1, X, Expr},
@@ -478,7 +481,8 @@ bin_error({bin, Lb, BinElts}=Expr, AbsRsn) ->
     {tuple, -1,
      lists:flatten(
        [ bin_indicator(P, Lbe, Type, Width)
-	 || {bin_element, Lbe, P, Type, Width} <- BinElts ]) ++ [AbsRsn]}.
+	 || {bin_element, Lbe, P, Type, Width} <- BinElts ]) 
+     ++ [{tuple, -1, [{atom, -1, reason}, AbsRsn]}]}.
 
 %% Emit variable name, value and expected type/width for all elements.
 %% Note that the Type and Width arguments are a bit underspecified,
