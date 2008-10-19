@@ -120,8 +120,12 @@ form(M, Form) ->
 	      smart_fault(M, F, A, Lc, Rsn);
 	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,error}},[Rsn]}=E) ->
 	      smart_error(M, F, A, Lc, Rsn);
+	 ({call,Lc,{remote,Lr,{atom,Lm,erlang},{atom,Lf,throw}},[Rsn]}=E) ->
+	      E;
 	 ({call,Lc,{atom,Lf,exit},[Rsn]}=E) ->
 	      smart_exit(M, F, A, Lc, Rsn);
+	 ({call,Lc,{atom,Lf,throw},[Rsn]}=E) ->
+	      E;
 	 ({call,Lc,{remote,Lr,{atom,Lm,Mod},{atom,Lf,Fn}},As}=E) ->
 	      case erlang:is_builtin(Mod, Fn, length(As)) of
 		  true ->
@@ -352,7 +356,7 @@ smart_bif(M, F, A, Line, Mod, Func, Arity, Args) ->
      Evals ++
      [mk_try([mk_remote_call(Mod, Func, Xs)],
 	     [],
-	     [exn_handler(exit, Rsn, [mk_exit(Exn_term)]),
+	     [exn_handler(exit,  Rsn, [mk_exit(Exn_term)]),
 	      exn_handler(error, Rsn, [mk_error(Exn_term)])],
 	     [])]}.
 
@@ -379,7 +383,7 @@ smart_binop(M, F, A, Line, Op, E1, E2) ->
      [{match, -1, X1, E1},
       {match, -1, X2, E2},
       mk_try([mk_binop(Op, X1, X2)], [],
-	     [exn_handler(exit, Rsn, [mk_exit(Exn_term)]),
+	     [exn_handler(exit,  Rsn, [mk_exit(Exn_term)]),
 	      exn_handler(error, Rsn, [mk_error(Exn_term)])],
 	     [])
       ]}.
@@ -408,7 +412,7 @@ smart_unop(M, F, A, Line, Op, Expr) ->
     {block, -1,
      [{match, -1, X, Expr},
       mk_try([mk_unop(Op, X)], [],
-	     [exn_handler(exit, Rsn, [mk_exit(Exn_term)]),
+	     [exn_handler(exit,  Rsn, [mk_exit(Exn_term)]),
 	      exn_handler(error, Rsn, [mk_error(Exn_term)])],
 	     [])
       ]}.
