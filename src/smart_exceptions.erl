@@ -307,7 +307,8 @@ smart_fun(M, F, A, Line, Clss) ->
      {clauses, 
       Clss ++ [{clause, -1, Xs, [], [mk_error(Term)]}]}}.
 
-%% Same as above, but preserves Info field too
+%% Same as above, but preserves Info field too. This field is only added
+%% internally, after sys_pre_expand.
 %%
 %% UNFINISHED
 %% - is the Info field properly preserved? e.g., we're adding variables
@@ -409,8 +410,8 @@ mk_unop(Op, X1) ->
 %% Rewrite to
 %%   X1 = E1, 
 %%   try Unop(X1)
-%%   catch exit:Rsn -> exit({{M,F,A},{line,L},{Unop, X1}})
-%%         exit:Rsn -> error({{M,F,A},{line,L},{Unop, X1}})
+%%   catch 
+%%         error:Rsn -> error({{M,F,A},{line,L},{Unop, X1}})
 %%   end
 %%
 %% UNFINISHED
