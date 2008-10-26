@@ -251,17 +251,21 @@ mk_nonlocal(Ty, Term) ->
     mk_remote_call(erlang, Ty, [Term]).
 
 %% P = E becomes
-%% (case E of P=X -> X; _ -> exit(...));
+%% (case E of P=X -> X; _ -> P = exit(...))
+%% [the P = exit(...) flourish is needed to fool the compiler rules
+%%  for exporting variables]
 
 smart_match(M, F, A, Line, Pat, Expr) ->
     X = new_var(),
-    FVs = vars_of(Pat),
     AbsMatch = {tuple, -1, [{atom, -1, match}, X]},
     {'case', -1, Expr,
      [{clause, -1, [{match,-1,Pat,X}], [], [X]},
       {clause, -1, [X], [], 
-       [smart_error(M, F, A, Line, AbsMatch)] ++
-       [ {match, -1, Y, {atom, -1, nyi}} || Y <- FVs ]}]}.
+       [{match, -1, Pat, smart_error(M, F, A, Line, AbsMatch)}]}]}.
+
+%% old alt: extract free vars and match each of them
+%%    FVs = vars_of(Pat),
+%%        [ {match, -1, Y, {atom, -1, nyi}} || Y <- FVs ]}]}.
 
 %% M, F, A, Line, Rsn are concrete; Expr and Clss are abstract
 %% Note: the Expr is already rewritten
