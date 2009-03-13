@@ -1,19 +1,7 @@
-Annotated exceptions for Erlang.
 
-This is a parse transform, which you invoke with
+'stable' is the version of smart_exceptions previously on jungerl.
 
-% erlc +'{parse_transform, smart_exceptions}' file.erl
-
-(smart_exceptions.beam has to be in your path)
-
-NOTES:
-- the current version is getting a bit old (originally for R9C) and has some known bugs;
-   should be renovated
-- bug: throw(Term) mishandled in at least some cases
-- exceptions when building binaries (wrong type etc) are not caught
-- exceptions due to undefined calls are not caught
-
-Furthermore, the code should be rewritten to always use 'try', and to always use
-mapform0. The mapform calls are to a proprietary library, which is
-nicer to use (for me) but basically unnecessary.
+'devel' is the new version under development; it uses try instead of catch
+to handle more exceptions correctly and is a simplification and rewrite of
+the stable version. Status: needs much more testing.
 
