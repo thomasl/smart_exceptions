@@ -247,7 +247,7 @@ resolve_form(Form, FuncDefs) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-forms(M, Handler, Forms0) when atom(M), atom(Handler) ->
+forms(M, Handler, Forms0) when is_atom(M), is_atom(Handler) ->
     Forms = simple_resolve_imports(Forms0),
     [ form(M, Handler, Form) || Form <- Forms ].
 
@@ -651,7 +651,7 @@ new_var() ->
 counter(Name) ->
     Ix =
 	case get(Name) of
-	    N when integer(N) ->
+	    N when is_integer(N) ->
 		N;
 	    undefined ->
 		0
@@ -697,11 +697,11 @@ mapform0(F, {match, Lc, P, E}) ->
     F({match, Lc, P, mapform0(F, E)});
 mapform0(F, {lc, Llc, E, GQs}) ->
     F({lc, Llc, mapform0(F, E), [ mapform1(F, GQ) || GQ <- GQs ]});
-mapform0(F, T) when tuple(T) ->
+mapform0(F, T) when is_tuple(T) ->
     F(list_to_tuple([ mapform0(F, Tsub) || Tsub <- tuple_to_list(T) ]));
-mapform0(F, Xs) when list(Xs) ->
+mapform0(F, Xs) when is_list(Xs) ->
     [ mapform0(F, X) || X <- Xs ];
-mapform0(F, C) when constant(C) ->
+mapform0(F, C) ->
     C.
 
 %% detect + elide pattern in qualifier
