@@ -99,8 +99,7 @@ forms(M, Forms0) ->
     Forms = simple_resolve_imports(Forms0),
     [ form(M, Form) || Form <- Forms ].
 
-form(M, Form) ->
-    {F, A} = function_name(Form),
+form(M, {function, F, A, _Clss} = Form) ->
     mapform0(
       fun({function, Lf, F1, A1, []}=Form0) ->
 	      Form0;
@@ -146,7 +145,9 @@ form(M, Form) ->
 	      E
       end,
       Form
-     ).
+     );
+form(M, Form) ->
+    Form.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%
