@@ -95,7 +95,7 @@ file(File, Opts) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-forms(M, Forms0) when atom(M) ->
+forms(M, Forms0) ->
     Forms = simple_resolve_imports(Forms0),
     [ form(M, Form) || Form <- Forms ].
 
@@ -330,7 +330,7 @@ smart_fun(M, F, A, Line, Clss, Info) ->
 smart_function(M, F, A, Line, Clss) ->
     Arity = clauses_arity(Clss),
     Xs = new_vars(Arity),
-    Fun_args = {tuple, -1, [{atom, -1, fun_clause}, cons_list(Xs)]},
+    Fun_args = {tuple, -1, [{atom, -1, function_clause}, cons_list(Xs)]},
     Term = exn_term({M, F, A}, {line, Line}, Fun_args),
     {function, Line, F, A,
      Clss ++
@@ -594,10 +594,21 @@ counter(Name) ->
     put(Name,Ix+1),
     Ix.
 
-%%
+%% UNFINISHED
+%% - parametrized module should pass the parameter values, but
+%%   currently passes only parameter names (as atoms)
+%%   - introducing this may need some rewriting of sites where module name
+%%     is used, because of the use of vars vs. abstraction of ground terms
 
-get_module_name([{attribute,Lm,module,M}|Xs]) ->
-    M;
+get_module_name([{attribute,Lm,module,Mod}|Xs]) ->
+    Mod;
+%get_module_name([{attribute,Lm,module,Mod}|Xs]) ->
+%    case Mod of
+%	M when atom(M) ->
+%	    M;
+%	{M, Xs} when atom(M) ->
+%	    M
+%    end;
 get_module_name([_|Xs]) ->
     get_module_name(Xs).
 
