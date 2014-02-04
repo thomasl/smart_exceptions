@@ -1,2 +1,5 @@
-ebin/
-devel/ebin/
+.eunit
+*.beam
+*.o
+*.plt
+erl_crash.dump
